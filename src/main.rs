@@ -1,9 +1,9 @@
-use std::{collections::HashMap, fmt::Display};
-
+use chrono;
+use derive_builder::Builder;
 use regex::Regex;
 use reqwest::header::CONTENT_TYPE;
 use scraper::{Html, Selector};
-
+use std::{collections::HashMap, fmt::Display};
 #[derive(Debug)]
 enum SSError {
     Index(usize),
@@ -22,13 +22,13 @@ impl Display for SSError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Location {
     longitude: f64,
     latitude: f64,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Builder)]
 struct Apartment {
     id: String,
     date: String, // TODO: Changle to chrono date
@@ -42,7 +42,6 @@ struct Apartment {
     partking: Option<String>,
     school_distance: Option<f64>,
 }
-
 // POST Requests Arguments
 static PA_PRICE_LOW: &str = "topt[8][min]";
 static PA_PRICE_HIGH: &str = "topt[8][max]";
@@ -72,19 +71,40 @@ fn decode(g: &'static str, r: &'static str, k: u64) -> Result<String, Box<dyn st
 }
 
 struct ApartmentPage {
-    // id: String
+    id: String,
     page: Html,
     apartment_details: Apartment,
 }
 
 impl ApartmentPage {
-    fn new(page: Html) -> Self {
+    fn new(id: String, page: Html) -> Self {
         Self {
+            id,
             page,
             apartment_details: Apartment::default(),
         }
     }
+    fn parse_attr(
+        &self,
+        selector_str: &str,
+        attr: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let selector = Selector::parse(&selector_str).unwrap();
+        let value = self
+            .page
+            .select(&selector)
+            .next()
+            .ok_or(Box::new(SSError::Selector(selector_str.to_string())))?;
+        // println!("{:?}", value);
+        let attr_value = value
+            .value()
+            .attr(attr)
+            .ok_or(Box::new(SSError::Selector(selector_str.to_string())))?
+            .to_string();
+        Ok(attr_value)
+    }
     fn parse_string(&self, selector_str: &str) -> Result<String, Box<dyn std::error::Error>> {
+        // println!("{:?}", selector_str);
         let selector = Selector::parse(&selector_str).unwrap();
         let value = self
             .page
@@ -136,27 +156,111 @@ impl ApartmentPage {
         // #msg_div_msg
     }
 
-    fn parse_floor(&self) -> Result<(bool, bool), Box<dyn std::error::Error>> {
-        let floor = self.parse_string("#tdo_4")?.to_lowercase();
-        let elevator_found = Regex::new(r#"лифт"#)?.is_match(&descr);
-        let elevator_found_1 = Regex::new(r#"лифт"#)?;
-        
+    fn parse_floor(&self) -> Result<(u64, bool), Box<dyn std::error::Error>> {
+        let floor_line = self.parse_string("#tdo_4")?.to_lowercase();
+        let elevator_found = Regex::new(r#"лифт"#)?.is_match(&floor_line);
+        let floor = floor_line
+            .split('/')
+            .next()
+            .ok_or(Box::new(SSError::Parse(format!(
+                "Fail to parse floor out of {}",
+                floor_line
+            ))))?
+            .parse()?;
+
+        Ok((floor, elevator_found))
     }
-    fn parse(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn parse_location(&self) -> Result<Location, Box<dyn std::error::Error>> {
+        let map = self.parse_attr("#mnu_map", "onclick")?.to_lowercase();
+        // Get coordinates out of 'onclick' attribute
+        let re = Regex::new(r#"&c=([[:digit:]]+\.[[:digit:]]+), ([[:digit:]]+\.[[:digit:]]+)"#)?;
+        let captures = re.captures(&map).ok_or(Box::new(SSError::Parse(format!(
+            "Fail to parse coordinates out of {}",
+            map
+        ))))?;
+        let lat = captures
+            .get(1)
+            .ok_or(Box::new(SSError::Parse(
+                "Fail to parse latitude".to_string(),
+            )))?
+            .as_str()
+            .parse()?;
+        let lon = captures
+            .get(2)
+            .ok_or(Box::new(SSError::Parse(
+                "Fail to parse longitude".to_string(),
+            )))?
+            .as_str()
+            .parse()?;
+
+        // println!("{:?}", captures);
+        Ok(Location {
+            longitude: lon,
+            latitude: lat,
+        })
+    }
+
+    fn parse_city(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let city = self.parse_string("#tdo_20")?;
+        Ok(city)
+    }
+    fn parse_district(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let district = self.parse_string("#tdo_856")?;
+        Ok(district)
+    }
+    fn parse_address(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let address = self.parse_string("#tdo_11")?;
+        Ok(address)
+    }
+    fn parse_datetime(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let datetime = self.parse_string("td.msg_footer:nth-child(2)")?;
+        let re = Regex::new(
+            "([[:digit:]]+\\.[[:digit:]]+\\.[[:digit:]]+ [[:digit:]]+:[[:digit:]]+:[[:digit:]]+)",
+        )?
+        .captures(datetime.as_str())
+        .ok_or(Box::new(SSError::Parse(format!(
+            "Fail to parse datetime: {}",
+            datetime
+        ))))?
+        .get(1)
+        .ok_or(Box::new(SSError::Parse(format!(
+            "Fail to parse datetime: {}",
+            datetime
+        ))))?;
+        println!("{:?}", datetime);
+        // chrono::NaiveDate::parse_from_str(s, fmt)
+        Ok(String::new())
+    }
+
+    fn parse(&mut self) -> Result<Apartment, Box<dyn std::error::Error>> {
+        // println!("{:?}", self.page);
+        let city = self.parse_city()?;
+        // return Ok(());
+        let district = self.parse_district()?;
+        let address = self.parse_address()?;
         let price = self.parse_price()?;
         let area = self.parse_area()?;
         let rooms = self.parse_rooms()?;
-        let parkign = self.parse_parking()?;
+        let parking = self.parse_parking()?;
         let (descr_parking, desct_elevator) = self.parse_description()?;
+        let (floor, floor_elevator) = self.parse_floor()?;
         println!(
-            "price: {}\n rooms: {}\n area: {}\n parking: {}\n lift: {}\n ",
+            "city: {}\ndistrict: {}\naddress: {}\nprice: {}\nrooms: {}\narea: {} \nfloor: {}\nparking: {}\nelevator: {}\n",
+            city,
+            district,
+            address,
             price,
             rooms,
             area,
-            parkign || descr_parking,
-            desct_elevator
+            floor,
+            parking || descr_parking,
+            desct_elevator || floor_elevator,
         );
-        Ok(())
+        let loc = self.parse_location()?;
+        let datetime = self.parse_datetime()?;
+        println!("location: {:?}", loc);
+        // let apartment = ApartmentBuilder::default().id(self.id).
+        Ok(ApartmentBuilder::default().build()?)
     }
 }
 // struct SearchPage {
@@ -299,10 +403,13 @@ impl ApartmentPageRequest {
         }
         let body = response.text()?;
         // response.status().eq(reqwest::Response::St)
-        // println!("len: {}", body.len());
+        println!("Got page size: {} KB", body.len() as f64 / 1000.0);
         // println!("len: {:?}", body);
         // Err(Box::new(SSError::Empty))
-        Ok(ApartmentPage::new(Html::parse_document(&body)))
+        Ok(ApartmentPage::new(
+            self.id.clone(),
+            Html::parse_document(&body),
+        ))
     }
 }
 
@@ -384,18 +491,20 @@ impl SearchPage {
     }
 }
 
-fn request_page(url: &str) -> Result<Html, Box<dyn std::error::Error>> {
-    let resp = reqwest::blocking::get(url)?;
+async fn request_page(url: &str) -> Result<Html, Box<dyn std::error::Error>> {
+    let resp = reqwest::get(url).await?;
+    // let resp = reqwest::blocking::get(url)?;
     println!("Request url({}): '{}'", resp.status(), url);
     if resp.status().as_u16() != 200 {
         Err(Box::new(SSError::Http(resp.status().as_str().to_string())))
     } else {
-        let body = resp.text()?;
+        let body = resp.text().await?;
         Ok(Html::parse_document(&body))
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //*[@id="contacts_js"]
 
     // %8B%A2wTt%8E%7D%5Cv%A2wWq%7D%8F%94z%7Dg%8Fry%94%98s%7D%8DTmy%93%5C
@@ -429,7 +538,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "{} => {}",
             apartment_page_request.id, apartment_page_request.href
         );
-        apartment_page_request.request(&client)?.parse();
+        apartment_page_request.request(&client)?.parse()?;
         break;
     }
     return Ok(());
