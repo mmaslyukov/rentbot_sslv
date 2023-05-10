@@ -1,0 +1,14 @@
+[Unit]
+Description=Rent bot seraching for apartmnets on ss.lv
+After=network.target
+#StartLimitIntervalSec=0
+[Service]
+#Type=simple
+Restart=always
+#RestartSec=1
+#User=user
+WorkingDirectory=/home/mimas/rentbot_sslv/
+ExecStart=/home/mimas/rentbot_sslv/rentbot_sslv
+
+[Install]
+WantedBy=multi-user.target

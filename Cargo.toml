@@ -1,18 +1,29 @@
 [package]
-name = "rent"
+name = "rentbot_sslv"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+# # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+# [features]
+# # If compiling on a system without OpenSSL installed, or cross-compiling for a different
+# # architecture, enable this feature to compile OpenSSL as part of the build.
+# # See https://docs.rs/openssl/#vendored for more.
+# static_ssl = ['openssl/vendored']
+
+# [dependencies.openssl]
+# optional = true
 
 [dependencies]
 base64 = "0.21.0"
 chrono = "0.4.24"
 derive_builder = "0.12.0"
+futures = "0.3.28"
 regex = "1.8.1"
+# reqwest = { version = "0.11.16",  default-features = false }
 reqwest = { version = "0.11.16", features = ["blocking", "cookies"] }
 scraper = "0.16.0"
 serde_urlencoded = "0.7.1"
+teloxide = { version = "0.12.2", features = ["full"] }
 tokio = { version = "1.28.0", features = ["full"] }
 unescape = "0.1.0"
 urlencoding = "2.1.2"

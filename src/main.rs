@@ -1,9 +1,13 @@
 use chrono;
 use derive_builder::Builder;
 use regex::Regex;
-use reqwest::header::CONTENT_TYPE;
 use scraper::{Html, Selector};
-use std::{collections::HashMap, fmt::Display};
+use std::{
+    collections::{hash_map::IterMut, HashMap},
+    fmt::Display,
+    sync::Arc,
+};
+use teloxide::prelude::*;
 #[derive(Debug)]
 enum SSError {
     Index(usize),
@@ -24,30 +28,65 @@ impl Display for SSError {
 
 #[derive(Debug, Clone)]
 struct Location {
-    longitude: f64,
     latitude: f64,
+    longitude: f64,
 }
 
-#[derive(Default, Debug, Builder)]
+#[derive(Debug, Clone, Default)]
+struct ApartmentDescription {
+    park: bool,
+    elevator: bool,
+    balkony: bool,
+}
+
+impl ApartmentDescription {
+    fn new(park: bool, elevator: bool, balkony: bool) -> Self {
+        Self {
+            park,
+            balkony,
+            elevator,
+        }
+    }
+}
+
+#[derive(Default, Debug, Builder, Clone)]
 struct Apartment {
+    url: String,
     id: String,
-    date: String, // TODO: Changle to chrono date
+    price: String,
+    datetime: chrono::NaiveDateTime, // TODO: Changle to chrono date
     city: String,
     district: String,
     address: String,
+    #[builder(default)]
     location: Option<Location>,
+    #[builder(default)]
+    distance: Option<i64>,
     rooms: u64,
     area: f64,
-    lift: bool,
-    partking: Option<String>,
-    school_distance: Option<f64>,
+    floor: Option<i64>,
+    elevator: bool,
+    parking: bool,
+    #[builder(default)]
+    description: Option<ApartmentDescription>,
 }
+
+const EARTH_RADIUS: f64 = 6_371_000 as f64;
+const TARGET_LOCATION: Location = Location {
+    latitude: 56.9585757,
+    longitude: 24.1257553,
+};
+
 // POST Requests Arguments
 static PA_PRICE_LOW: &str = "topt[8][min]";
 static PA_PRICE_HIGH: &str = "topt[8][max]";
 static PA_AREA_LOW: &str = "topt[3][min]";
 
-fn decode(g: &'static str, r: &'static str, k: u64) -> Result<String, Box<dyn std::error::Error>> {
+fn _decode(
+    g: &'static str,
+    r: &'static str,
+    _k: u64,
+) -> Result<String, Box<dyn std::error::Error>> {
     let base = base64::decode(g.as_bytes())?;
     let data_url = std::str::from_utf8(base.as_slice())?;
     // println!("Decoded: {}", data);
@@ -67,21 +106,23 @@ fn decode(g: &'static str, r: &'static str, k: u64) -> Result<String, Box<dyn st
         );
     }
     println!("res: {}", plain);
-    Ok((plain))
+    Ok(plain)
 }
 
 struct ApartmentPage {
+    url: String,
     id: String,
     page: Html,
-    apartment_details: Apartment,
+    // apartment_details: Apartment,
 }
 
 impl ApartmentPage {
-    fn new(id: String, page: Html) -> Self {
+    fn new(url: String, id: String, page: Html) -> Self {
         Self {
+            url,
             id,
             page,
-            apartment_details: Apartment::default(),
+            // apartment_details: Apartment::default(),
         }
     }
     fn parse_attr(
@@ -144,19 +185,22 @@ impl ApartmentPage {
     fn parse_parking(&self) -> Result<bool, Box<dyn std::error::Error>> {
         let parking = self.parse_string("#tdo_1734")?.to_lowercase();
         let found = Regex::new(r#"парков"#)?.is_match(&parking);
-        println!("p: {}", found);
         Ok(found)
     }
-    fn parse_description(&self) -> Result<(bool, bool), Box<dyn std::error::Error>> {
+    fn parse_description_p_e(&self) -> Result<ApartmentDescription, Box<dyn std::error::Error>> {
         let descr = self.parse_string("#msg_div_msg")?.to_lowercase();
-        let parking_found = Regex::new(r#"парков|parki"#)?.is_match(&descr);
-        let lift_found = Regex::new(r#"лифт|lift|elevator"#)?.is_match(&descr);
-        println!("p: {}, l: {}", parking_found, lift_found);
-        Ok((parking_found, lift_found))
+        let park_found = Regex::new(r#" парк| park"#)?.is_match(&descr);
+        let balkony_found = Regex::new(r#" балкон| терасса| balkony| terrace"#)?.is_match(&descr);
+        let elevator_found = Regex::new(r#" лифт| lift| elevator"#)?.is_match(&descr);
+        Ok(ApartmentDescription::new(
+            park_found,
+            elevator_found,
+            balkony_found,
+        ))
         // #msg_div_msg
     }
 
-    fn parse_floor(&self) -> Result<(u64, bool), Box<dyn std::error::Error>> {
+    fn parse_floor_f_e(&self) -> Result<(i64, bool), Box<dyn std::error::Error>> {
         let floor_line = self.parse_string("#tdo_4")?.to_lowercase();
         let elevator_found = Regex::new(r#"лифт"#)?.is_match(&floor_line);
         let floor = floor_line
@@ -201,38 +245,40 @@ impl ApartmentPage {
     }
 
     fn parse_city(&self) -> Result<String, Box<dyn std::error::Error>> {
-        let city = self.parse_string("#tdo_20")?;
+        let city = self.parse_string("#tdo_20 > b")?;
         Ok(city)
     }
     fn parse_district(&self) -> Result<String, Box<dyn std::error::Error>> {
-        let district = self.parse_string("#tdo_856")?;
+        let district = self.parse_string("#tdo_856 > b")?;
         Ok(district)
     }
     fn parse_address(&self) -> Result<String, Box<dyn std::error::Error>> {
-        let address = self.parse_string("#tdo_11")?;
+        let address = self.parse_string("#tdo_11 > b")?;
         Ok(address)
     }
-    fn parse_datetime(&self) -> Result<String, Box<dyn std::error::Error>> {
-        let datetime = self.parse_string("td.msg_footer:nth-child(2)")?;
-        let re = Regex::new(
-            "([[:digit:]]+\\.[[:digit:]]+\\.[[:digit:]]+ [[:digit:]]+:[[:digit:]]+:[[:digit:]]+)",
-        )?
-        .captures(datetime.as_str())
-        .ok_or(Box::new(SSError::Parse(format!(
-            "Fail to parse datetime: {}",
-            datetime
-        ))))?
-        .get(1)
-        .ok_or(Box::new(SSError::Parse(format!(
-            "Fail to parse datetime: {}",
-            datetime
-        ))))?;
-        println!("{:?}", datetime);
-        // chrono::NaiveDate::parse_from_str(s, fmt)
-        Ok(String::new())
+    fn parse_datetime(&self) -> Result<chrono::NaiveDateTime, Box<dyn std::error::Error>> {
+        let datetime_parsed = self.parse_string("td.msg_footer:nth-child(2)")?;
+        let datetime_str =
+            Regex::new("([[:digit:]]+\\.[[:digit:]]+\\.[[:digit:]]+ [[:digit:]]+:[[:digit:]]+)")?
+                .captures(datetime_parsed.as_str())
+                .ok_or(Box::new(SSError::Parse(format!(
+                    "Fail to parse datetime: {}",
+                    datetime_parsed
+                ))))?
+                .get(1)
+                .ok_or(Box::new(SSError::Parse(format!(
+                    "Fail to get match of datetime: {}",
+                    datetime_parsed
+                ))))?
+                .as_str();
+        // println!("{:?}", datetime_str);
+        Ok(chrono::NaiveDateTime::parse_from_str(
+            datetime_str,
+            "%d.%m.%Y %H:%M",
+        )?)
     }
 
-    fn parse(&mut self) -> Result<Apartment, Box<dyn std::error::Error>> {
+    fn parse(self) -> Result<Apartment, Box<dyn std::error::Error>> {
         // println!("{:?}", self.page);
         let city = self.parse_city()?;
         // return Ok(());
@@ -240,27 +286,59 @@ impl ApartmentPage {
         let address = self.parse_address()?;
         let price = self.parse_price()?;
         let area = self.parse_area()?;
-        let rooms = self.parse_rooms()?;
-        let parking = self.parse_parking()?;
-        let (descr_parking, desct_elevator) = self.parse_description()?;
-        let (floor, floor_elevator) = self.parse_floor()?;
-        println!(
-            "city: {}\ndistrict: {}\naddress: {}\nprice: {}\nrooms: {}\narea: {} \nfloor: {}\nparking: {}\nelevator: {}\n",
-            city,
-            district,
-            address,
-            price,
-            rooms,
-            area,
-            floor,
-            parking || descr_parking,
-            desct_elevator || floor_elevator,
-        );
-        let loc = self.parse_location()?;
+        let rooms = self.parse_rooms()? as u64;
+        let parking = self.parse_parking().unwrap_or(false);
+        let descr = self.parse_description_p_e().ok();
+        let floor = self.parse_floor_f_e().ok();
+        // println!(
+        //     "city: {}\ndistrict: {}\naddress: {}\nprice: {}\nrooms: {}\narea: {} \nfloor: {:?}\nparking: {:?}",
+        //     city,
+        //     district,
+        //     address,
+        //     price,
+        //     rooms,
+        //     area,
+        //     floor,
+        //     parking,
+        // );
+        let loc = self.parse_location().ok();
         let datetime = self.parse_datetime()?;
-        println!("location: {:?}", loc);
-        // let apartment = ApartmentBuilder::default().id(self.id).
-        Ok(ApartmentBuilder::default().build()?)
+        // println!("datetime: {:?}", datetime);
+        // println!("location: {:?}", loc);
+        // // let apartment = ApartmentBuilder::default().id(self.id).
+        let mut floor_elevator = false;
+        let mut floor_number = None;
+        if let Some(floor) = floor {
+            floor_elevator = floor.1;
+            floor_number = Some(floor.0);
+        }
+        let distance = if let Some(l) = loc.as_ref() {
+            Some(calculate_distance(
+                l.latitude,
+                l.longitude,
+                TARGET_LOCATION.latitude,
+                TARGET_LOCATION.longitude,
+            ) as i64)
+        } else {
+            None
+        };
+        Ok(ApartmentBuilder::default()
+            .url(self.url)
+            .id(self.id)
+            .datetime(datetime)
+            .city(city)
+            .district(district)
+            .address(address)
+            .rooms(rooms)
+            .parking(parking)
+            .elevator(floor_elevator)
+            .price(price)
+            .area(area)
+            .floor(floor_number)
+            .location(loc)
+            .distance(distance)
+            .description(descr)
+            .build()?)
     }
 }
 // struct SearchPage {
@@ -310,15 +388,10 @@ struct SearchPageRequest {
     body: String,
 }
 impl SearchPageRequest {
-    fn request(
+    async fn request(
         self,
-        client: &reqwest::blocking::Client,
+        client: &reqwest::Client,
     ) -> Result<SearchPage, Box<dyn std::error::Error>> {
-        // let client = reqwest::blocking::ClientBuilder::new()
-        //     .cookie_store(true)
-        //     .build()
-        //     .unwrap();
-
         let request_post = client
             .post(self.url.clone())
             .header(reqwest::header::CONTENT_LENGTH, self.body.len())
@@ -333,44 +406,30 @@ impl SearchPageRequest {
             .body(self.body.clone())
             .build()?;
 
-        let response = client.execute(request_post.try_clone().unwrap())?;
+        let response = client.execute(request_post.try_clone().unwrap()).await?;
         println!(
-            "POST: status:{} headers:{:?}",
+            "1st POST: status:{} headers:{:?}",
             response.status(),
             response.headers()
         );
-        let text = response.text().unwrap();
-        println!("page size: {} KB", text.len() as f64 / 1000.0);
-        if (true) {
-            let request_get = client
+        let _text = response.text().await?;
+        // println!("page size: {} KB", text.len() as f64 / 1000.0);
+        if false {
+            let _request_get = client
                 .get(self.url.clone())
                 .header(reqwest::header::CONNECTION, "keep-alive")
                 .header(reqwest::header::ACCEPT, "*/*")
                 .header(reqwest::header::USER_AGENT, "agent")
                 .build()?;
-            // } else {
-            // let request_post = client
-            //     .post(self.url)
-            //     .header(reqwest::header::CONTENT_LENGTH, self.body.len())
-            //     .header(reqwest::header::CONNECTION, "keep-alive")
-            //     .header(reqwest::header::ACCEPT, "*/*")
-            //     // .header(reqwest::header::ACCEPT_ENCODING, "gzip, deflate, br")
-            //     .header(
-            //         reqwest::header::CONTENT_TYPE,
-            //         "application/x-www-form-urlencoded",
-            //     )
-            //     .header(reqwest::header::USER_AGENT, "agent")
-            //     .body(self.body)
-            //     .build()?;
         }
-        let response = client.execute(request_post.try_clone().unwrap())?;
+        let response = client.execute(request_post.try_clone().unwrap()).await?;
         println!(
-            "GET/POST: status:{} headers:{:?}",
+            "2nd POST: status:{} headers:{:?}",
             response.status(),
             response.headers()
         );
-        let text = response.text().unwrap();
-        println!("page size: {} KB", text.len() as f64 / 1000.0);
+        let text = response.text().await?;
+        println!("Page size: {} KB", text.len() as f64 / 1000.0);
         // println!("{}", text);
         Ok(SearchPage::new(
             self.url,
@@ -392,21 +451,27 @@ impl ApartmentPageRequest {
     //         url: reqwest::Url::parse(url).unwrap(),
     //     }
     // }
-    fn request(
+    async fn request(
         &self,
-        client: &reqwest::blocking::Client,
-    ) -> Result<ApartmentPage, Box<dyn std::error::Error>> {
+        client: Arc<reqwest::Client>,
+    ) -> Result<ApartmentPage, Box<dyn std::error::Error + Send + Sync>> {
         let url = reqwest::Url::parse(self.href.as_str())?;
-        let response = client.get(url.clone()).send()?;
+        let response = client.get(url.clone()).send().await?;
         if 200 != response.status() {
             return Err(Box::new(SSError::Http(url.to_string())));
         }
-        let body = response.text()?;
+        let body = response.text().await?;
         // response.status().eq(reqwest::Response::St)
-        println!("Got page size: {} KB", body.len() as f64 / 1000.0);
+        println!(
+            "Got page: id({}) size({} KB), ulr({})",
+            self.id,
+            body.len() as f64 / 1000.0,
+            self.href
+        );
         // println!("len: {:?}", body);
         // Err(Box::new(SSError::Empty))
         Ok(ApartmentPage::new(
+            self.href.clone(),
             self.id.clone(),
             Html::parse_document(&body),
         ))
@@ -416,7 +481,6 @@ impl ApartmentPageRequest {
 struct SearchPage {
     url: reqwest::Url,
     page: Html,
-    row_id: u32,
     apartments: Vec<ApartmentPageRequest>,
 }
 
@@ -425,7 +489,6 @@ impl SearchPage {
         Self {
             url,
             page: html,
-            row_id: 2,
             apartments: Vec::new(),
         }
     }
@@ -436,7 +499,7 @@ impl SearchPage {
 
     fn parse(mut self) -> Result<Self, Box<dyn std::error::Error>> {
         let selector_path = "#filter_frm > table:nth-child(3) > tbody:nth-child(1)";
-        println!("Use selector: '{}'", selector_path);
+        // println!("Use selector: '{}'", selector_path);
         let selector = Selector::parse(&selector_path).unwrap();
         let attr_name = "href";
         let app = self
@@ -491,18 +554,75 @@ impl SearchPage {
     }
 }
 
-async fn request_page(url: &str) -> Result<Html, Box<dyn std::error::Error>> {
-    let resp = reqwest::get(url).await?;
-    // let resp = reqwest::blocking::get(url)?;
-    println!("Request url({}): '{}'", resp.status(), url);
-    if resp.status().as_u16() != 200 {
-        Err(Box::new(SSError::Http(resp.status().as_str().to_string())))
-    } else {
-        let body = resp.text().await?;
-        Ok(Html::parse_document(&body))
+#[derive(Default, PartialEq)]
+enum ApartmentLifeCycle {
+    #[default]
+    Active,
+    Sent,
+}
+
+// impl ApartmentLifeCycle {
+//     fn phase_send(&mut self) {
+//         match self {
+//             Self::Active => *self = Self::Sent,
+//             _ => {}
+//         }
+//     }
+// }
+
+#[derive(Default)]
+struct ApartmentWrapper {
+    apartment: Apartment,
+    lifecycle: ApartmentLifeCycle,
+    expired: bool,
+}
+impl From<Apartment> for ApartmentWrapper {
+    fn from(value: Apartment) -> Self {
+        Self {
+            apartment: value,
+            ..Default::default()
+        }
+    }
+}
+#[derive(Default)]
+struct ApartmentCache {
+    apartments: HashMap<String, ApartmentWrapper>,
+}
+
+impl ApartmentCache {
+    fn update(&mut self, apartments: Vec<Apartment>) {
+        for a in apartments {
+            let key = a.id.clone();
+            // println!("cache size is {}", self.apartments.len());
+            if !self.apartments.contains_key(&key) {
+                println!("Insert a key:{}", key);
+                self.apartments.insert(key.clone(), a.into());
+            } else {
+                let value = self.apartments.get_mut(&key).unwrap();
+                value.expired = false;
+            }
+            // println!("cache size is {}", self.apartments.len());
+        }
+        // Remove expired entires
+        self.apartments.retain(|_, v| !v.expired);
+    }
+
+    fn iter(&mut self) -> IterMut<'_, String, ApartmentWrapper> {
+        self.apartments.iter_mut()
     }
 }
 
+// function to calculate the distance between two points
+fn calculate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let delta_lat = (lat2 - lat1).to_radians();
+    let delta_lon = (lon2 - lon1).to_radians();
+
+    let a = (delta_lat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (delta_lon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+
+    EARTH_RADIUS * c
+}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //*[@id="contacts_js"]
@@ -522,24 +642,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // );
     // decode("byU1QiU4MyU4NXglQTElOTlpJTk1JTk4", "K0dbVwzGrpLa-wRs2", 2);
 
-    let client = reqwest::blocking::ClientBuilder::new()
-        .cookie_store(true)
-        .build()
-        .unwrap();
-    let mut sp = SearchPageBuilder::new()
-        .url("https://www.ss.lv/ru/real-estate/flats/riga/today-2/hand_over/filter/")
-        .min_price(1000)
-        .build()?
-        .request(&client)?
-        .parse()?;
+    // let client = reqwest::blocking::ClientBuilder::new()
+    let client = Arc::new(
+        reqwest::ClientBuilder::new()
+            .cookie_store(true)
+            .build()
+            .unwrap(),
+    );
 
-    while let Ok(apartment_page_request) = sp.next() {
-        println!(
-            "{} => {}",
-            apartment_page_request.id, apartment_page_request.href
-        );
-        apartment_page_request.request(&client)?.parse()?;
-        break;
+    let bot = Bot::from_env();
+    let mut cache = ApartmentCache::default();
+    let chat_id = std::env::var("TELOXIDE_CHAT_ID")?;
+    println!("token => {}, chat id: {}", bot.token(), chat_id);
+    loop {
+        let mut sp = SearchPageBuilder::new()
+            .url("https://www.ss.lv/ru/real-estate/flats/riga/today-2/hand_over/filter/")
+            .min_area(70)
+            .max_price(1000)
+            .min_price(500)
+            .build()?
+            .request(&client)
+            .await?
+            .parse()?;
+
+        let mut handles = vec![];
+        while let Ok(apartment_page_request) = sp.next() {
+            handles.push(tokio::spawn(handle_page(
+                apartment_page_request,
+                client.clone(),
+            )));
+        }
+
+        let apartments: Vec<Apartment> = futures::future::join_all(handles)
+            .await
+            .iter()
+            .map(|j| j.as_ref().unwrap().as_ref().unwrap().clone())
+            .collect();
+
+        cache.update(apartments);
+
+        // println!("cache size is {} before the loop", cache.apartments.len());
+        for entry in cache.iter() {
+            let a = &entry.1.apartment;
+            let mut skip = false;
+            if entry.1.lifecycle == ApartmentLifeCycle::Sent {
+                skip = true;
+            }
+            if !a.elevator
+                && a.description.is_some()
+                && !a.description.as_ref().unwrap().elevator
+                && a.floor.is_some()
+                && *a.floor.as_ref().unwrap() != 1
+            {
+                skip = true;
+            }
+            if !skip {
+                println!("Sending new apartment: id({}), url({})", a.id, a.url);
+                let send_status = bot
+                .send_message(
+                    chat_id.clone(),
+                    format!(
+                        "дата:{}\nцена:{}, комн:{}, пл.:{} м2, дист:{} м, этаж:{}, лифт:{}, п.м.:{}, \nоп(л:{}, п:{}, б:{}) \nссылка: {}",
+                        a.datetime,
+                        a.price,
+                        a.rooms,
+                        a.area,
+                        a.distance.unwrap_or(-1),
+                        a.floor.unwrap_or_default(),
+                        if a.elevator { "+" } else { "-" },
+                        if a.parking { "+" } else { "-" },
+                        if a.description.as_ref().unwrap_or(&ApartmentDescription::default()).elevator { "+" } else { "-" },
+                        if a.description.as_ref().unwrap_or(&ApartmentDescription::default()).park{ "+" } else { "-" },
+                        if a.description.as_ref().unwrap_or(&ApartmentDescription::default()).balkony{ "+" } else { "-" },
+                        a.url
+                    ),
+                )
+                .await;
+                if send_status.is_ok() {
+                    entry.1.lifecycle = ApartmentLifeCycle::Sent;
+                }
+            }
+
+            entry.1.expired = true;
+            // println!("send");
+        }
+        // println!("cache size is {} after the loop", cache.apartments.len());
+        // println!("sleep");
+        tokio::time::sleep(tokio::time::Duration::from_secs(60 * 15)).await;
     }
-    return Ok(());
+    // return Ok(());
+}
+
+async fn handle_page(apr: ApartmentPageRequest, client: Arc<reqwest::Client>) -> Option<Apartment> {
+    apr.request(client).await.unwrap().parse().ok()
 }
