@@ -4,7 +4,7 @@
 set -e
 
 PRJ="rentbot_sslv"
-HOST="192.168.0.101"
+HOST="192.168.0.106"
 TARGET="192.168.0.150"
 
 if [ -z "$1" ]
@@ -15,7 +15,7 @@ fi
 
 
 echo "###### Syncing the code base..."
-sshpass -p "$1" rsync -av --delete --exclude 'target' ./ mimas@$HOST:/home/mimas/prj/$PRJ
+sshpass -p "$1" rsync -av --delete --exclude 'target' --exclude '.git' ./ mimas@$HOST:/home/mimas/prj/$PRJ
 if [ $? -ne 0 ]; then
     echo "Error: Fail to RSync data"
     exit 1
@@ -53,6 +53,14 @@ if [ $? -ne 0 ]; then
     echo "Error: Fail to copy the binary to the target"
     exit 1
 fi
+
+
+
+
+
+exit 0
+
+
 
 
 echo "###### Running from the $TARGET..."

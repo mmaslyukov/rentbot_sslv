@@ -280,13 +280,13 @@ impl ApartmentPage {
 
     fn parse(self) -> Result<Apartment, Box<dyn std::error::Error>> {
         // println!("{:?}", self.page);
-        let city = self.parse_city()?;
+        let city = self.parse_city().unwrap_or_default();
         // return Ok(());
-        let district = self.parse_district()?;
-        let address = self.parse_address()?;
-        let price = self.parse_price()?;
-        let area = self.parse_area()?;
-        let rooms = self.parse_rooms()? as u64;
+        let district = self.parse_district().unwrap_or_default();
+        let address = self.parse_address().unwrap_or_default();
+        let price = self.parse_price().unwrap_or_default();
+        let area = self.parse_area().unwrap_or_default();
+        let rooms = self.parse_rooms().unwrap_or_default() as u64;
         let parking = self.parse_parking().unwrap_or(false);
         let descr = self.parse_description_p_e().ok();
         let floor = self.parse_floor_f_e().ok();
@@ -590,18 +590,23 @@ struct ApartmentCache {
 }
 
 impl ApartmentCache {
-    fn update(&mut self, apartments: Vec<Apartment>) {
+    fn update(&mut self, apartments: Vec<Option<Apartment>>) {
         for a in apartments {
-            let key = a.id.clone();
-            // println!("cache size is {}", self.apartments.len());
-            if !self.apartments.contains_key(&key) {
-                println!("Insert a key:{}", key);
-                self.apartments.insert(key.clone(), a.into());
-            } else {
-                let value = self.apartments.get_mut(&key).unwrap();
-                value.expired = false;
+            match a {
+                Some(a) => {
+                    let key = a.id.clone();
+                    // println!("cache size is {}", self.apartments.len());
+                    if !self.apartments.contains_key(&key) {
+                        println!("Insert a key:{}", key);
+                        self.apartments.insert(key.clone(), a.into());
+                    } else {
+                        let value = self.apartments.get_mut(&key).unwrap();
+                        value.expired = false;
+                    }
+                    // println!("cache size is {}", self.apartments.len());
+                }
+                None => {}
             }
-            // println!("cache size is {}", self.apartments.len());
         }
         // Remove expired entires
         self.apartments.retain(|_, v| !v.expired);
@@ -654,6 +659,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cache = ApartmentCache::default();
     let chat_id = std::env::var("TELOXIDE_CHAT_ID")?;
     println!("token => {}, chat id: {}", bot.token(), chat_id);
+    bot.send_message(chat_id.clone(), "Rebooted").await.unwrap();
     loop {
         let mut sp = SearchPageBuilder::new()
             .url("https://www.ss.lv/ru/real-estate/flats/riga/today-2/hand_over/filter/")
@@ -673,10 +679,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )));
         }
 
-        let apartments: Vec<Apartment> = futures::future::join_all(handles)
+        let apartments: Vec<Option<Apartment>> = futures::future::join_all(handles)
             .await
             .iter()
-            .map(|j| j.as_ref().unwrap().as_ref().unwrap().clone())
+            .map(|j| j.as_ref().unwrap().to_owned())
             .collect();
 
         cache.update(apartments);
@@ -734,5 +740,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn handle_page(apr: ApartmentPageRequest, client: Arc<reqwest::Client>) -> Option<Apartment> {
-    apr.request(client).await.unwrap().parse().ok()
+    let page_res = apr.request(client).await.unwrap().parse();
+    match page_res {
+        Ok(page) => Some(page),
+        Err(e) => {
+            println!("Error during parse of a page '{}': {}", apr.href, e);
+            None
+        }
+    }
 }
