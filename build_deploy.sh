@@ -15,7 +15,7 @@ fi
 
 
 echo "###### Syncing the code base..."
-sshpass -p "$1" rsync -av --delete --exclude 'target' --exclude '.git' ./ mimas@$HOST:/home/mimas/prj/$PRJ
+sshpass -p "$1" rsync -av --delete --exclude 'target' --exclude '.git' --exclude '.cargo' ./ mimas@$HOST:/home/mimas/prj/$PRJ
 if [ $? -ne 0 ]; then
     echo "Error: Fail to RSync data"
     exit 1
@@ -35,6 +35,7 @@ fi
 echo "###### Building..."
 sshpass -p "$1" ssh mimas@$HOST \
     "source  ~/.cargo/env && \
+    export CARGO_BUILD_RUSTFLAGS=\"-L /home/mimas/tools/sqlite/lib\" &&\
     export AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_INCLUDE_DIR=~/tools/openssl-3.0.8/include/ &&\
     export AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR=~/tools/openssl-3.0.8/ &&\
     export AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_DIR=~/tools/openssl-3.0.8 &&\
