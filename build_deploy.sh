@@ -4,7 +4,7 @@
 set -e
 
 PRJ="rentbot_sslv"
-HOST="192.168.0.106"
+HOST="192.168.0.107"
 TARGET="192.168.0.150"
 
 if [ -z "$1" ]

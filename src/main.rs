@@ -184,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 log::trace!("Skip due to elevator conditions");
                 skip = true;
-            } else if ApartmentRecrod::select_one_by(&record.id).is_ok() {
+            } else if ApartmentRecrod::select_one_exp_by(&record.id).is_ok() {
                 // Already has record for this id
                 entry.1.lifecycle = ApartmentLifeCycle::Sent;
                 skip = true;

@@ -30,7 +30,7 @@ impl ApartmentRecrod {
             // id(text), price(text), url(text), brief(text)
             "CREATE TABLE IF NOT EXISTS {} (
             {}  TEXT NOT NULL,
-            {}  TEXT NOT NULL UNIQUE,
+            {}  TEXT NOT NULL,
             {}  TEXT NOT NULL,
             {}  TEXT NOT NULL,
             {}  TEXT NOT NULL
@@ -70,7 +70,19 @@ impl ApartmentRecrod {
             .next()
             .unwrap_or_else(|| Err(rusqlite::Error::QueryReturnedNoRows))
     }
+    pub fn select_one_exp_by<T: fmt::Display>(h: &Header<T>) -> Result<Self, rusqlite::Error> {
+        let conn = utils::open(Config::database_location())?;
+        let query = query_wrapper(format!(
+            "SELECT * FROM {} WHERE {}='{}' and datetime>datetime('now', '-7 days') ORDER BY rowid DESC LIMIT 1",
+            TABLE_NAME, h.name, h.value,
+        ));
 
+        let mut stmt = conn.prepare(&query)?;
+        let mut record_iter = stmt.query_map([], |row| Self::from_row(row))?;
+        record_iter
+            .next()
+            .unwrap_or_else(|| Err(rusqlite::Error::QueryReturnedNoRows))
+    }
     pub fn insert(&self) -> Result<Self, rusqlite::Error> {
         let conn = utils::open(Config::database_location())?;
         self.create_table()?;
