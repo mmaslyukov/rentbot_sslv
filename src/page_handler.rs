@@ -63,8 +63,9 @@ impl ApartmentPage {
             .next()
             .ok_or(Box::new(SSError::Selector(selector_str.to_string())))?
             .inner_html();
-        // println!("{:?}", value);
-        Ok(value)
+        // println!("parsed: {:?}", value);
+        // println!("trimmed str: {:?}", value.trim());
+        Ok(value.trim().to_string())
     }
 
     fn parse_f64(&self, selector_str: &str) -> Result<f64, Box<dyn std::error::Error>> {
@@ -75,9 +76,11 @@ impl ApartmentPage {
             .next()
             .ok_or(Box::new(SSError::Selector(selector_str.to_string())))?
             .inner_html();
-        // println!("{:?}", value);
-        let area = value.split(' ').next().unwrap().parse()?;
-        Ok(area)
+        // println!("parsed: {:?}", value);
+        // println!("trimmed f64: {:?}", value.trim());
+        let v: f64 = value.as_str().trim().split(' ').next().unwrap().parse()?;
+        // println!("v: {:?}", value);
+        Ok(v)
     }
 
     pub fn parse_price(&self) -> Result<String, Box<dyn std::error::Error>> {
@@ -202,17 +205,17 @@ impl ApartmentPage {
         let parking = self.parse_parking().unwrap_or(false);
         let descr = self.parse_description_p_e().ok();
         let floor = self.parse_floor_f_e().ok();
-        // println!(
-        //     "city: {}\ndistrict: {}\naddress: {}\nprice: {}\nrooms: {}\narea: {} \nfloor: {:?}\nparking: {:?}",
-        //     city,
-        //     district,
-        //     address,
-        //     price,
-        //     rooms,
-        //     area,
-        //     floor,
-        //     parking,
-        // );
+        println!(
+            "city: {}\ndistrict: {}\naddress: {}\nprice: {}\nrooms: {}\narea: {} \nfloor: {:?}\nparking: {:?}",
+            city,
+            district,
+            address,
+            price,
+            rooms,
+            area,
+            floor,
+            parking,
+        );
         let loc = self.parse_location().ok();
         let datetime = self.parse_datetime()?;
         // println!("datetime: {:?}", datetime);

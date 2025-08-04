@@ -101,6 +101,22 @@ impl ApartmentCache {
     }
 }
 
+#[derive(Debug, Default)]
+struct Telega {
+    bot: Option<Bot>,
+    chat: Option<String>,
+}
+
+impl Telega {
+    fn new(bot: Option<Bot>, chat: Option<String>) -> Self {
+        Self { bot, chat }
+    }
+
+    fn valid(&self) -> bool {
+        self.bot.is_some() && self.chat.is_some()
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //*[@id="contacts_js"]
@@ -132,13 +148,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build()
             .unwrap(),
     );
-    // log::debug!("test");
-    let bot = Bot::from_env();
+    let mut tlg = Telega::default(); //new(Some(bot), chat_id_opt);
+                                     // log::debug!("test");
+    tlg.chat = std::env::var("TELOXIDE_CHAT_ID").ok();
+    if std::env::var("TELOXIDE_TOKEN").is_ok() {
+        tlg.bot = Some(Bot::from_env());
+    }
+    // let bot = Bot::from_env();
+    // let chat_id_opt = std::env::var("TELOXIDE_CHAT_ID").ok();
     let mut cache = ApartmentCache::default();
-    let chat_id_opt = std::env::var("TELOXIDE_CHAT_ID").ok();
-    log::info!("token => {}, chat id: {:?}", bot.token(), chat_id_opt);
-    if chat_id_opt.is_some() {
-        bot.send_message(chat_id_opt.clone().unwrap(), "--==| Rebooted |==--")
+    log::info!("telega: {:?}", tlg);
+    // log::info!("token => {}, chat id: {:?}", bot.token(), chat_id_opt);
+    if tlg.valid() {
+        tlg.bot
+            .as_ref()
+            .unwrap()
+            .send_message(tlg.chat.clone().unwrap(), "--==| Rebooted |==--")
             .await
             .unwrap();
     }
@@ -178,12 +203,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let a = &entry.1.apartment;
             if entry.1.lifecycle == ApartmentLifeCycle::Sent {
                 skip = true;
-            } else if !a.elevator
-                && !a.description.clone().unwrap_or_default().elevator
-                && *a.floor.as_ref().unwrap_or_else(|| &(-1 as i64)) > 2
-            {
-                log::trace!("Skip due to elevator conditions");
-                skip = true;
+            // } else if !a.elevator
+            //     && !a.description.clone().unwrap_or_default().elevator
+            //     && *a.floor.as_ref().unwrap_or_else(|| &(-1 as i64)) > 2
+            // {
+            //     log::trace!("Skip due to elevator conditions");
+            //     skip = true;
             } else if ApartmentRecrod::select_one_exp_by(&record.id).is_ok() {
                 // Already has record for this id
                 entry.1.lifecycle = ApartmentLifeCycle::Sent;
@@ -219,10 +244,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let msg = format!("дата:{} \n{} \nссылка:{}", a.datetime, brief, a.url);
                 log::info!("Sending new apartment: id({}), url({})", a.id, a.url);
+                log::info!("Details: {:?}", brief);
                 // log::info!("Send message: {}", msg);
-                entry.1.lifecycle = if chat_id_opt.is_some() {
-                    if bot
-                        .send_message(chat_id_opt.clone().unwrap(), msg)
+                entry.1.lifecycle = if tlg.valid() {
+                    if tlg
+                        .bot
+                        .as_ref()
+                        .unwrap()
+                        .send_message(tlg.chat.clone().unwrap(), msg)
                         .await
                         .is_ok()
                     {
